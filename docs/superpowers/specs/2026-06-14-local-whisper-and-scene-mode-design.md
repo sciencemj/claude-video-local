@@ -20,6 +20,12 @@ over PPT decks):
 
 The two flags are independent and can be used separately or together.
 
+A third, supporting capability makes a run **portable across sessions**:
+3. **Bundle save/load** (`--save <dir>`, `/watch-save`, `/watch-load`) — because
+   local Whisper runs only in Claude Code, a run is exported as a self-contained
+   bundle (slide frames + grouped transcript) that a Claude.ai chat or a fresh
+   Claude Code session can consume without reprocessing.
+
 ## Goals
 
 - Transcribe arbitrarily long local videos with no API key and no length cap.
@@ -28,6 +34,10 @@ The two flags are independent and can be used separately or together.
 - Align each slide with the words spoken while it was on screen.
 - Keep the existing API + captions paths and the pure-stdlib core untouched for
   users who don't opt into local Whisper.
+- **Convey a processed video to another session.** Local Whisper only runs in
+  Claude Code (shell + venv + torch), not Claude.ai. So a run here must be
+  saveable as a portable **bundle** (slide frames + grouped transcript) that a
+  Claude.ai chat or a fresh Claude Code session can consume without reprocessing.
 
 ## Non-goals (YAGNI)
 
@@ -61,6 +71,7 @@ consumes, so integration is a drop-in at the segment boundary.
 | Transcript precedence | **captions → local → API**. |
 | `--multi-lang` | **Defer** (extra `silero-vad` dep). |
 | Slide frame resolution | **768px** default in scene mode (balanced legibility vs tokens). |
+| Convey to other session | **Two subskills** — `/watch-save` + `/watch-load` — **plus** a `--save <dir>` flag on `watch.py` (one-run bundle export). |
 
 ## Detailed design
 
@@ -189,6 +200,57 @@ Local transcription of a 2-hour video takes many minutes, and re-running
   example: `/watch lecture.mp4 --scenes` (auto-uses local Whisper once the venv
   exists).
 
+### F. Portable bundles (`--save` / `/watch-save` / `/watch-load`)
+
+Make a run conveyable to a session that can't reprocess it (Claude.ai, or a fresh
+Claude Code session).
+
+**Bundle layout** (a self-contained directory):
+
+```
+<bundle>/
+  report.md         # the run's markdown report, with RELATIVE frame links
+  frames/
+    slide_0001.jpg  # (frame_0001.jpg in non-scene mode)
+    …
+  transcript.json   # [{start,end,text}], plus source label — machine-readable
+  transcript.txt    # human-readable timestamped transcript
+  meta.json         # schema, source, title, duration, mode, resolution,
+                    # frame count, transcript source, scene settings, tool version
+```
+
+**`watch.py --save <dir>`** — the primary mechanism. When set, `<dir>` is used as
+the work dir (frames extracted straight into `<dir>/frames/`, no copying), and
+after the run the script additionally writes `report.md` (identical to stdout but
+with **relative** `frames/…` paths so the bundle is portable), `transcript.json`,
+`transcript.txt`, and `meta.json`. Without `--save`, behavior is unchanged
+(temp dir, stdout-only report). Recommended flow when you plan to share:
+`/watch lecture.mp4 --scenes --save ./lecture-bundle`.
+
+**`/watch-save` subskill** (`commands/watch-save.md`) — thin wrapper: runs
+`watch.py <source> [flags] --save <dir>`, then prints **conveyance instructions**:
+- *To another Claude Code session:* `/watch-load <dir>`.
+- *To Claude.ai:* upload `report.md` and the images in `frames/`. For a lighter
+  transfer, upload `report.md` / `transcript.txt` alone (transcript-only — the
+  text is the cheap, high-value part; slide images are optional).
+
+If the user already ran `/watch` and only now wants to save, `/watch-save`
+re-runs with `--save`; the **transcript cache** makes re-transcription instant
+(scene detection's decode pass still re-runs — hence "pass `--save` up front when
+you plan to share").
+
+**`/watch-load <dir>` subskill** (`commands/watch-load.md` + `scripts/load_bundle.py`)
+— re-ingests a bundle into the current Claude Code session: `load_bundle.py`
+validates `meta.json`, prints the report with frame paths **resolved to absolute**
+under `<dir>`, and lists every frame path; the command then has Claude `Read` each
+frame. Pure stdlib. In Claude.ai there is no load command — the user uploads the
+files and Claude reads them directly.
+
+**Surface note:** `/watch-save` and `/watch-load` are Claude Code slash commands
+(like the existing `commands/watch.md`); they are not part of the claude.ai
+`watch.skill` bundle, which is correct — the whole point is that the heavy work
+happens in Claude Code and only the *artifact* crosses to Claude.ai.
+
 ## Error handling
 
 - `--whisper local` but venv missing → hint to run `setup.py --setup-local`; fall
@@ -210,6 +272,9 @@ real video needed:
 - short-slide merging (`min-slide-seconds`) and overflow merge-to-cap.
 - per-slide transcript grouping vs `filter_range`.
 - cache key determinism.
+- bundle round-trip: `--save` writes `report.md` (relative links) + `meta.json` +
+  `transcript.json`/`.txt`; `load_bundle.py` resolves links back to absolute and
+  lists all frames.
 
 A real-video smoke test (`--scenes --whisper local` on a short slide clip) is
 documented in the spec/README but kept out of CI (needs ffmpeg + model weights).
@@ -220,11 +285,14 @@ documented in the spec/README but kept out of CI (needs ffmpeg + model weights).
 |---|---|
 | `scripts/local_whisper.py` | **new** — vendored local Whisper runner (venv subprocess). |
 | `scripts/scenes.py` | **new** — scene detection, slide spans, per-slide frames + transcript grouping. |
-| `scripts/watch.py` | `--whisper local`, model/device/language flags, `--scenes` + scene flags, precedence chain, scene-mode report, transcript cache wiring. |
+| `scripts/load_bundle.py` | **new** — validate + re-emit a bundle (absolute frame paths) for `/watch-load`. |
+| `scripts/watch.py` | `--whisper local`, model/device/language flags, `--scenes` + scene flags, `--save <dir>` bundle writer, precedence chain, scene-mode report, transcript cache wiring. |
 | `scripts/whisper.py` | reuse `extract_audio`; (selection moves to `watch.py`). |
 | `scripts/setup.py` | `--setup-local` venv builder; `--check`/`--json` account for local; installer offers local option. |
-| `SKILL.md`, `README.md` | document local Whisper + scene mode. |
-| `tests/` | **new** — unit tests for slide/grouping/cache logic. |
+| `commands/watch-save.md` | **new** — `/watch-save` subskill (run + bundle + conveyance instructions). |
+| `commands/watch-load.md` | **new** — `/watch-load` subskill (re-ingest a bundle). |
+| `SKILL.md`, `README.md` | document local Whisper, scene mode, and bundle save/load. |
+| `tests/` | **new** — unit tests for slide/grouping/cache + bundle round-trip logic. |
 
 ## Open decisions
 
