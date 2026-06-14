@@ -64,5 +64,38 @@ class SceneParseAndGroupTests(unittest.TestCase):
         self.assertIn("intro", grouped[0]["text"])
 
 
+class AdaptiveThresholdTests(unittest.TestCase):
+    def test_parse_scored(self):
+        text = (
+            "frame:0 pts:2091 pts_time:69.7\nlavfi.scene_score=0.050000\n"
+            "frame:1 pts:7345 pts_time:244.83\nlavfi.scene_score=0.900000\n"
+        )
+        self.assertEqual(scenes.parse_scored(text), [(69.7, 0.05), (244.83, 0.9)])
+
+    def test_cuts_from_scores_filters_and_prepends_zero(self):
+        scored = [(10.0, 0.05), (20.0, 0.5), (30.0, 0.2)]
+        self.assertEqual(scenes.cuts_from_scores(scored, 0.1), [0.0, 20.0, 30.0])
+        self.assertEqual(scenes.cuts_from_scores(scored, 0.4), [0.0, 20.0])
+
+    def test_adaptive_lowers_threshold_to_meet_target(self):
+        # One strong cut (0.9) plus many weak (0.05) slide changes every 60s.
+        scored = [(float(t), 0.05) for t in range(60, 1200, 60)] + [(30.0, 0.9)]
+        cuts, used = scenes.adaptive_cuts(
+            scored, duration=1300.0, start_threshold=0.3,
+            min_slide_seconds=3.0, target_min=8, floor_threshold=0.03,
+        )
+        slides = scenes.cuts_to_slides(cuts, 1300.0, min_slide_seconds=3.0)
+        self.assertGreaterEqual(len(slides), 8)
+        self.assertLess(used, 0.3)
+
+    def test_adaptive_keeps_start_threshold_when_target_already_met(self):
+        scored = [(float(t), 0.5) for t in range(60, 900, 60)]  # 14 strong cuts
+        cuts, used = scenes.adaptive_cuts(
+            scored, duration=1000.0, start_threshold=0.3,
+            min_slide_seconds=3.0, target_min=8, floor_threshold=0.03,
+        )
+        self.assertEqual(used, 0.3)
+
+
 if __name__ == "__main__":
     unittest.main()

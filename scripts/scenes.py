@@ -114,6 +114,101 @@ def detect_cuts(video_path: str, threshold: float = 0.3) -> list[float]:
     return cuts
 
 
+SCORE_RE = re.compile(r"scene_score=([0-9]+\.?[0-9]*)")
+
+
+def parse_scored(text: str) -> list[tuple[float, float]]:
+    """Parse ffmpeg metadata=print output into (timestamp, scene_score) pairs."""
+    out: list[tuple[float, float]] = []
+    current_t: float | None = None
+    for line in (text or "").splitlines():
+        ts = PTS_RE.search(line)
+        if ts:
+            try:
+                current_t = float(ts.group(1))
+            except ValueError:
+                current_t = None
+            continue
+        sc = SCORE_RE.search(line)
+        if sc and current_t is not None:
+            try:
+                out.append((round(current_t, 3), float(sc.group(1))))
+            except ValueError:
+                pass
+            current_t = None
+    return out
+
+
+def scene_scores(video_path: str, floor: float = 0.02) -> list[tuple[float, float]]:
+    """One decode pass: return (timestamp, scene_score) for every candidate transition.
+
+    Captures scores once so the threshold can be tuned in software (no re-decode).
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="watch-scenes-")
+    os.close(fd)
+    print("[watch] scanning for slide cuts (one decode pass)…", file=sys.stderr)
+    try:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-nostats",
+            "-i", str(Path(video_path).resolve()),
+            "-filter:v", f"select='gt(scene,{floor})',metadata=print:file={tmp}",
+            "-an", "-f", "null", "-",
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+        text = Path(tmp).read_text(encoding="utf-8", errors="ignore")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    return parse_scored(text)
+
+
+def cuts_from_scores(scored: list[tuple[float, float]], threshold: float) -> list[float]:
+    """Cut timestamps (always including 0.0) for scores at or above `threshold`."""
+    cuts = {0.0}
+    cuts.update(round(t, 3) for t, s in scored if s >= threshold and t > 0.0)
+    return sorted(cuts)
+
+
+def adaptive_cuts(
+    scored: list[tuple[float, float]],
+    duration: float,
+    start_threshold: float = 0.3,
+    min_slide_seconds: float = 3.0,
+    target_min: int = 8,
+    floor_threshold: float = 0.025,
+) -> tuple[list[float], float]:
+    """Lower the threshold (in software) until at least `target_min` slides emerge.
+
+    Returns (cuts, threshold_used). If the target is never reached, returns the
+    threshold that produced the most slides.
+    """
+    ladder: list[float] = []
+    th = start_threshold
+    while th >= floor_threshold:
+        ladder.append(round(th, 4))
+        th /= 1.5
+    if not ladder or ladder[-1] > floor_threshold:
+        ladder.append(round(floor_threshold, 4))
+
+    best: tuple[list[float], float, int] | None = None
+    for th in ladder:
+        cuts = cuts_from_scores(scored, th)
+        count = len(cuts_to_slides(cuts, duration, min_slide_seconds))
+        if best is None or count > best[2]:
+            best = (cuts, th, count)
+        if count >= target_min:
+            return cuts, th
+    assert best is not None
+    return best[0], best[1]
+
+
 def extract_slide_frames(video_path: str, slides: list[dict], out_dir, resolution: int = 768) -> list[dict]:
     """Extract one representative JPEG per slide. Returns slides with 'path' + 'timestamp_seconds'."""
     if shutil.which("ffmpeg") is None:

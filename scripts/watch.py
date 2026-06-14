@@ -104,9 +104,28 @@ def _base_ctx(args, info, meta, full_duration, resolution) -> dict:
 
 
 def run_scenes(video_path, work, args, info, meta, full_duration, resolution, max_frames) -> tuple[dict, list[dict]]:
-    cuts = scenes.detect_cuts(video_path, threshold=args.scene_threshold)
+    # Auto-tune sensitivity: white-on-white slide changes score low, so a fixed
+    # threshold misses most. Capture scores once, then lower the threshold until
+    # enough slides emerge (target ≈ 1 slide / 2.5 min, overridable with --min-slides).
+    target_min = args.min_slides if args.min_slides else max(8, round(full_duration / 90))
+    used_threshold = args.scene_threshold
+    scored = scenes.scene_scores(video_path)
+    if scored:
+        cuts, used_threshold = scenes.adaptive_cuts(
+            scored, full_duration, start_threshold=args.scene_threshold,
+            min_slide_seconds=args.min_slide_seconds, target_min=target_min,
+        )
+    else:
+        # Fallback to the single-threshold pass if score capture yielded nothing.
+        cuts = scenes.detect_cuts(video_path, threshold=args.scene_threshold)
     slides = scenes.cuts_to_slides(cuts, full_duration, min_slide_seconds=args.min_slide_seconds)
     slides, merged = scenes.merge_to_cap(slides, max_slides=max_frames)
+    auto = used_threshold < args.scene_threshold
+    print(
+        f"[watch] {len(slides)} slides @ threshold {used_threshold:.3f}"
+        f"{' (auto-lowered for sensitivity)' if auto else ''}",
+        file=sys.stderr,
+    )
     if merged:
         print(f"[watch] merged {merged} short slide(s) to stay within {max_frames}-frame cap", file=sys.stderr)
     slides = scenes.extract_slide_frames(video_path, slides, work / "frames", resolution=resolution)
@@ -120,7 +139,8 @@ def run_scenes(video_path, work, args, info, meta, full_duration, resolution, ma
     ctx.update({
         "mode": "scenes",
         "slides": slides,
-        "scene_threshold": args.scene_threshold,
+        "scene_threshold": round(used_threshold, 3),
+        "auto_threshold": auto,
         "merged_count": merged,
         "max_frames": max_frames,
         "transcript_source": source,
@@ -200,7 +220,8 @@ def main() -> int:
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     ap.add_argument("--save", type=str, default=None, help="Write a portable bundle to this dir")
     ap.add_argument("--scenes", action="store_true", help="Slide mode: one frame per detected slide + grouped transcript")
-    ap.add_argument("--scene-threshold", type=float, default=0.3, help="Scene-cut sensitivity (default 0.3)")
+    ap.add_argument("--scene-threshold", type=float, default=0.3, help="Starting scene-cut threshold (auto-lowered if too few slides)")
+    ap.add_argument("--min-slides", type=int, default=0, help="Target minimum slides (0 = auto from duration); drives auto-sensitivity")
     ap.add_argument("--min-slide-seconds", type=float, default=3.0, help="Merge slides shorter than this")
     ap.add_argument("--no-whisper", action="store_true", help="Disable Whisper fallback")
     ap.add_argument("--whisper", choices=["local", "groq", "openai"], default=None,

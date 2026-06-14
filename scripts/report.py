@@ -96,8 +96,9 @@ def _render_scenes(ctx: dict, relative: bool) -> str:
     L: list[str] = ["", "# watch: lecture report (scenes)", ""]
     _header(ctx, L)
     slides = ctx.get("slides") or []
+    auto = " auto" if ctx.get("auto_threshold") else ""
     L.append(f"- **Slides:** {len(slides)} detected "
-             f"(threshold {ctx.get('scene_threshold')}, {ctx['resolution']}px)")
+             f"(threshold {ctx.get('scene_threshold')}{auto}, {ctx['resolution']}px)")
     if ctx.get("transcript_source"):
         L.append(f"- **Transcript:** via {ctx['transcript_source']}")
     else:

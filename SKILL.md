@@ -109,7 +109,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
-- `--scenes` — lecture/slide mode: detect slides and emit one frame per slide with the transcript grouped per slide. Best for 1–2 hour talks over slide decks. Defaults to 768px frames; tune with `--scene-threshold` (default 0.3) and `--min-slide-seconds` (default 3).
+- `--scenes` — lecture/slide mode: detect slides and emit one frame per slide with the transcript grouped per slide. Best for 1–2 hour talks over slide decks. Defaults to 768px frames. Sensitivity is **auto-tuned**: the scene threshold starts at `--scene-threshold` (0.3) and is automatically lowered until enough slides are found (white-on-white slide changes score low), targeting ≈1 slide / 1.5 min. Override the target with `--min-slides N`, or set a fixed floor via `--scene-threshold`. `--min-slide-seconds` (default 3) merges flicker.
 - `--whisper local` — transcribe locally (no API key, no 25 MB / 50 min cap). Requires a one-time `setup.py --setup-local`. Default precedence is captions → local → API.
 - `--whisper-model` / `--whisper-device` / `--whisper-language` — local Whisper knobs (default model `turbo`, auto device, auto language).
 - `--save DIR` — write a portable bundle (report.md + frames/ + transcript.json/.txt + meta.json) to convey to another session.
