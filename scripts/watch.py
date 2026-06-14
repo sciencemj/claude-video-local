@@ -73,7 +73,7 @@ def run_whisper(video_path: str, work: Path, args) -> tuple[list[dict], str | No
     if backend == "local" and not local_available():
         print(f"[watch] --whisper local requested but the local venv is missing — run "
               f"`python3 {SCRIPT_DIR / 'setup.py'} --setup-local`", file=sys.stderr)
-        backend = None  # fall through to API auto below
+        backend = choose_backend(None)  # fall through to API if a key exists
 
     if backend == "local":
         try:

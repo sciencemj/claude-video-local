@@ -194,12 +194,18 @@ Other knobs (passed to `scripts/watch.py`):
 .
 ├── SKILL.md                 # skill contract — loaded by all three surfaces
 ├── scripts/
-│   ├── watch.py             # entry point — orchestrates download → frames → transcript
+│   ├── watch.py             # entry point — orchestrates download → frames/slides → transcript
 │   ├── download.py          # yt-dlp wrapper
 │   ├── frames.py            # ffmpeg frame extraction + auto-fps logic
+│   ├── scenes.py            # slide detection + per-slide framing/grouping (--scenes)
 │   ├── transcribe.py        # VTT parsing + dedupe + Whisper orchestration
 │   ├── whisper.py           # Groq / OpenAI clients (pure stdlib)
-│   ├── setup.py             # preflight + installer
+│   ├── local_whisper.py     # local Whisper via the managed venv (--whisper local)
+│   ├── cache.py             # content-addressed local-transcript cache
+│   ├── report.py            # markdown rendering (uniform + scenes)
+│   ├── bundle.py            # portable bundle writer (--save)
+│   ├── load_bundle.py       # bundle re-ingest (/watch-load)
+│   ├── setup.py             # preflight + installer + --setup-local
 │   └── build-skill.sh       # build dist/watch.skill for claude.ai upload
 ├── hooks/                   # SessionStart status hook (Claude Code only)
 ├── .claude-plugin/          # plugin.json + marketplace.json (Claude Code)
