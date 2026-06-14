@@ -94,3 +94,52 @@ def group_transcript(slides: list[dict], segments: list[dict]) -> list[dict]:
         d["text"] = format_transcript(segs)
         out.append(d)
     return out
+
+
+def detect_cuts(video_path: str, threshold: float = 0.3) -> list[float]:
+    """Return slide-cut timestamps (always starting with 0.0) via ffmpeg scene filter."""
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    print(f"[watch] scanning for slide cuts (threshold {threshold}) — one decode pass…", file=sys.stderr)
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats",
+        "-i", str(Path(video_path).resolve()),
+        "-filter:v", f"select='gt(scene,{threshold})',showinfo",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    times = [t for t in parse_scene_times(result.stderr) if t > 0.0]
+    cuts = sorted({0.0, *(round(t, 3) for t in times)})
+    print(f"[watch] detected {len(cuts)} slide boundaries", file=sys.stderr)
+    return cuts
+
+
+def extract_slide_frames(video_path: str, slides: list[dict], out_dir, resolution: int = 768) -> list[dict]:
+    """Extract one representative JPEG per slide. Returns slides with 'path' + 'timestamp_seconds'."""
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("slide_*.jpg"):
+        existing.unlink()
+
+    out: list[dict] = []
+    src = str(Path(video_path).resolve())
+    for s in slides:
+        ts = representative_timestamp(s)
+        path = out_dir / f"slide_{s['index']:04d}.jpg"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{ts:.3f}", "-i", src,
+            "-frames:v", "1", "-vf", f"scale={resolution}:-2", "-q:v", "4",
+            str(path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not path.exists():
+            print(f"[watch] slide {s['index']} frame failed: {result.stderr.strip()}", file=sys.stderr)
+            continue
+        d = dict(s)
+        d["path"] = str(path)
+        d["timestamp_seconds"] = ts
+        out.append(d)
+    return out
