@@ -914,6 +914,13 @@ def _transcribe(audio: str, model_name: str, device: str, language: str | None) 
 
 
 def main() -> int:
+    # Running under the venv interpreter: Python puts this script's directory
+    # (scripts/) on sys.path[0], and scripts/whisper.py would shadow the pip
+    # `openai-whisper` package. Strip our own dir so `import whisper` (inside
+    # _transcribe) resolves to the installed package, not the API wrapper.
+    here = Path(__file__).resolve().parent
+    sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != here]
+
     ap = argparse.ArgumentParser(prog="local_whisper")
     ap.add_argument("audio")
     ap.add_argument("--model", default="turbo")
