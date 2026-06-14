@@ -41,5 +41,28 @@ class SlideMathTests(unittest.TestCase):
         self.assertTrue(10.0 <= t < 10.2)
 
 
+class SceneParseAndGroupTests(unittest.TestCase):
+    def test_parse_scene_times(self):
+        stderr = (
+            "[Parsed_showinfo_1 @ 0x] n:0 pts:0 pts_time:0 ...\n"
+            "[Parsed_showinfo_1 @ 0x] n:1 pts:720 pts_time:30.03 ...\n"
+            "[Parsed_showinfo_1 @ 0x] n:2 pts:2160 pts_time:90.5 ...\n"
+        )
+        self.assertEqual(scenes.parse_scene_times(stderr), [0.0, 30.03, 90.5])
+
+    def test_group_transcript_assigns_overlapping_segments(self):
+        segments = [
+            {"start": 0.0, "end": 10.0, "text": "intro"},
+            {"start": 12.0, "end": 20.0, "text": "topic one"},
+            {"start": 95.0, "end": 100.0, "text": "topic two"},
+        ]
+        slides = [{"index": 1, "start": 0.0, "end": 90.0},
+                  {"index": 2, "start": 90.0, "end": 120.0}]
+        grouped = scenes.group_transcript(slides, segments)
+        self.assertEqual([s["text"] for s in grouped[0]["segments"]], ["intro", "topic one"])
+        self.assertEqual([s["text"] for s in grouped[1]["segments"]], ["topic two"])
+        self.assertIn("intro", grouped[0]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

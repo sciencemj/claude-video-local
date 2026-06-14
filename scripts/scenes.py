@@ -73,3 +73,24 @@ def representative_timestamp(slide: dict, offset: float = 0.5) -> float:
     if t >= end:
         t = max(start, (start + end) / 2.0)
     return round(t, 3)
+
+
+def parse_scene_times(stderr: str) -> list[float]:
+    out: list[float] = []
+    for m in PTS_RE.finditer(stderr or ""):
+        try:
+            out.append(round(float(m.group(1)), 3))
+        except ValueError:
+            pass
+    return out
+
+
+def group_transcript(slides: list[dict], segments: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for s in slides:
+        segs = filter_range(segments, s["start"], s["end"])
+        d = dict(s)
+        d["segments"] = segs
+        d["text"] = format_transcript(segs)
+        out.append(d)
+    return out
