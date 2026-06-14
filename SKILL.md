@@ -88,8 +88,16 @@ session, save a bundle and convey it:
 python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" lecture.mp4 --scenes --save ./lecture-bundle
 ```
 
-- Another Claude Code session: `python3 "${CLAUDE_SKILL_DIR}/scripts/load_bundle.py" ./lecture-bundle`.
-- Claude.ai: upload `report.md` and the images in `frames/` (or `report.md`/`transcript.txt` alone for transcript-only).
+After saving, **ask the user how they'll use it** (`AskUserQuestion`) and act on the answer:
+
+- **Claude.ai / web or app** → build a single PDF and have them upload that one file:
+  `python3 "${CLAUDE_SKILL_DIR}/scripts/make_pdf.py" ./lecture-bundle` → upload `slides.pdf`
+  (plus `transcript.txt` if they want the words). The PDF just wraps the existing frames, so
+  it's instant and generated only when wanted.
+- **Another Claude Code session** → `python3 "${CLAUDE_SKILL_DIR}/scripts/load_bundle.py" ./lecture-bundle`.
+- **Transcript only** → `./lecture-bundle/transcript.txt`.
+
+If the user already said where it's going, skip the question and do the matching step.
 
 ## How to invoke
 
