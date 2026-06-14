@@ -53,6 +53,8 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 - User pastes a video URL (YouTube, Vimeo, X, TikTok, Twitch clip, most yt-dlp-supported sites) and asks about it.
 - User points at a local video file (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) and asks about it.
 - User types `/watch <url-or-path> [question]`.
+- User wants to **save / convey** a watched video to another session (Claude.ai or a fresh Claude Code session) — they type `/watch-save <url-or-path> <bundle-dir>` (or ask to "save this for later / for Claude.ai"). See "Saving and conveying" below.
+- User wants to **reuse a saved bundle** without reprocessing — they type `/watch-load <bundle-dir>` (or hand you a bundle directory). See "Saving and conveying" below.
 
 ## Recommended limits
 
@@ -79,25 +81,50 @@ under each slide. First run needs `setup.py --setup-local` (builds a Python-3.11
 venv with openai-whisper; ~GB). The transcript is cached, so re-running with a
 different `--scene-threshold` does not re-transcribe.
 
-## Conveying a result to another session
+## Saving and conveying (`/watch-save`, `/watch-load`)
 
-Local Whisper only runs in Claude Code. To use a result in Claude.ai or a fresh
-session, save a bundle and convey it:
+Local Whisper and slide extraction only run in Claude Code, so the heavy work
+happens here and the *result* travels to wherever it's needed. Two Claude Code
+commands wrap this; the underlying scripts work on any surface.
+
+### `/watch-save <source> <bundle-dir> [flags]` — produce a portable bundle
+
+Run the normal pipeline with `--save`, which writes a self-contained bundle —
+`report.md` + `frames/` + `transcript.json` + `transcript.txt` + `meta.json`:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" lecture.mp4 --scenes --save ./lecture-bundle
+python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "<source>" --scenes --save ./lecture-bundle
 ```
 
-After saving, **ask the user how they'll use it** (`AskUserQuestion`) and act on the answer:
+(Use `--scenes` for slide lectures; pass `--save` from the start when sharing is
+the goal — re-running later re-decodes the video, though the transcript is cached.)
+
+Then **ask the user how they'll use it** (`AskUserQuestion`, header "Convey to")
+and act on the answer — don't just print options:
 
 - **Claude.ai / web or app** → build a single PDF and have them upload that one file:
   `python3 "${CLAUDE_SKILL_DIR}/scripts/make_pdf.py" ./lecture-bundle` → upload `slides.pdf`
   (plus `transcript.txt` if they want the words). The PDF just wraps the existing frames, so
   it's instant and generated only when wanted.
-- **Another Claude Code session** → `python3 "${CLAUDE_SKILL_DIR}/scripts/load_bundle.py" ./lecture-bundle`.
-- **Transcript only** → `./lecture-bundle/transcript.txt`.
+- **Another Claude Code session** → tell them to run `/watch-load ./lecture-bundle` there.
+- **Transcript only** → `./lecture-bundle/transcript.txt` (no images to upload).
 
 If the user already said where it's going, skip the question and do the matching step.
+
+### `/watch-load <bundle-dir>` — re-ingest a saved bundle
+
+In a fresh Claude Code session, load a bundle without re-downloading or
+re-transcribing:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/load_bundle.py" ./lecture-bundle
+```
+
+It prints the report with frame paths resolved to absolute, then lists every
+frame. `Read` each frame and answer from the frames + grouped transcript, exactly
+as in a normal `/watch` run (Steps 3–4 below). On **Claude.ai** there is no load
+command — the user just uploads the bundle's `slides.pdf` / images + `report.md`
+and you read them directly.
 
 ## How to invoke
 
