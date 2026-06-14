@@ -30,6 +30,8 @@ from pathlib import Path
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
+WHISPER_VENV = CONFIG_DIR / "whisper-venv"
+LOCAL_WHISPER_PYTHON = "3.11"  # openai-whisper / torch wheels are reliable here
 ENV_TEMPLATE = """# /watch API configuration
 #
 # Whisper transcription fallback — used only when yt-dlp cannot get captions
@@ -51,6 +53,21 @@ OPENAI_API_KEY=
 
 def _which(name: str) -> str | None:
     return shutil.which(name)
+
+
+def whisper_venv_dir() -> Path:
+    return WHISPER_VENV
+
+
+def venv_python(venv: Path | None = None) -> Path:
+    venv = Path(venv) if venv else WHISPER_VENV
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def local_available(venv: Path | None = None) -> bool:
+    return venv_python(venv).exists()
 
 
 def _check_binaries() -> list[str]:
@@ -200,10 +217,12 @@ def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
     has_key, backend = _have_api_key()
+    local = local_available()
+    transcription_ok = has_key or local
 
-    if not missing and has_key:
+    if not missing and transcription_ok:
         status = "ready"
-    elif missing and not has_key:
+    elif missing and not transcription_ok:
         status = "needs_install_and_key"
     elif missing:
         status = "needs_install"
@@ -216,6 +235,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "local_available": local,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -237,8 +257,8 @@ def cmd_check() -> int:
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if not s["has_api_key"] and not s["local_available"]:
+        parts.append("no transcription configured (API key, or local venv via --setup-local)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -246,7 +266,8 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
+    transcription_ok = s["has_api_key"] or s["local_available"]
+    if s["missing_binaries"] and not transcription_ok:
         return 4
     if s["missing_binaries"]:
         return 2
@@ -309,7 +330,54 @@ def cmd_install() -> int:
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
     print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print("")
+    print("  Or run local Whisper (no key, no length limit; downloads ~GB):")
+    print(f"    python3 {Path(__file__).resolve()} --setup-local")
     return 3
+
+
+def cmd_setup_local() -> int:
+    """Build/repair the local-Whisper venv (uv-preferred, Python 3.11, openai-whisper)."""
+    venv = whisper_venv_dir()
+    py = venv_python(venv)
+    if py.exists():
+        print(f"[setup] local Whisper venv already present: {venv}")
+        return 0
+
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    if _which("uv"):
+        print(f"[setup] creating venv with uv (Python {LOCAL_WHISPER_PYTHON})…", file=sys.stderr)
+        if subprocess.run(["uv", "venv", "--python", LOCAL_WHISPER_PYTHON, str(venv)]).returncode != 0:
+            print("[setup] `uv venv` failed.", file=sys.stderr)
+            return 2
+        print("[setup] installing openai-whisper (this downloads ~GB)…", file=sys.stderr)
+        if subprocess.run(["uv", "pip", "install", "--python", str(py), "openai-whisper"]).returncode != 0:
+            print("[setup] `uv pip install openai-whisper` failed.", file=sys.stderr)
+            return 2
+    else:
+        py311 = _which(f"python{LOCAL_WHISPER_PYTHON}") or _which("python3.11")
+        if not py311:
+            print(
+                f"[setup] need Python {LOCAL_WHISPER_PYTHON} or `uv`. Install uv "
+                "(https://docs.astral.sh/uv/) or python3.11, then re-run --setup-local.",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"[setup] creating venv with {py311}…", file=sys.stderr)
+        if subprocess.run([py311, "-m", "venv", str(venv)]).returncode != 0:
+            return 2
+        subprocess.run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
+        print("[setup] installing openai-whisper (this downloads ~GB)…", file=sys.stderr)
+        if subprocess.run([str(py), "-m", "pip", "install", "openai-whisper"]).returncode != 0:
+            return 2
+
+    check = subprocess.run([str(py), "-c", "import whisper"], capture_output=True, text=True)
+    if check.returncode != 0:
+        print(f"[setup] venv built but `import whisper` failed: {check.stderr.strip()}", file=sys.stderr)
+        return 2
+    print(f"[setup] local Whisper ready: {venv}")
+    print("[setup] model weights (turbo ≈ 1.5 GB) download on first transcription.")
+    return 0
 
 
 def main() -> int:
@@ -319,6 +387,8 @@ def main() -> int:
             return cmd_check()
         if arg == "--json":
             return cmd_json()
+        if arg == "--setup-local":
+            return cmd_setup_local()
     return cmd_install()
 
 
