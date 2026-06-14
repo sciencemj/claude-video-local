@@ -20,11 +20,16 @@ class VenvHelperTests(unittest.TestCase):
         else:
             self.assertEqual(py, venv / "bin" / "python")
 
+    def _tmpdir(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
     def test_local_available_false_when_missing(self):
-        self.assertFalse(setup.local_available(Path(tempfile.mkdtemp()) / "novenv"))
+        self.assertFalse(setup.local_available(self._tmpdir() / "novenv"))
 
     def test_local_available_true_when_python_present(self):
-        venv = Path(tempfile.mkdtemp()) / "venv"
+        venv = self._tmpdir() / "venv"
         py = setup.venv_python(venv)
         py.parent.mkdir(parents=True, exist_ok=True)
         py.write_text("#!/bin/sh\n")

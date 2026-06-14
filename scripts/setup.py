@@ -55,10 +55,6 @@ def _which(name: str) -> str | None:
     return shutil.which(name)
 
 
-def whisper_venv_dir() -> Path:
-    return WHISPER_VENV
-
-
 def venv_python(venv: Path | None = None) -> Path:
     venv = Path(venv) if venv else WHISPER_VENV
     if os.name == "nt":
@@ -68,6 +64,11 @@ def venv_python(venv: Path | None = None) -> Path:
 
 def local_available(venv: Path | None = None) -> bool:
     return venv_python(venv).exists()
+
+
+def _whisper_check(py: Path) -> subprocess.CompletedProcess:
+    """Run `import whisper` in the venv interpreter to verify it's usable."""
+    return subprocess.run([str(py), "-c", "import whisper"], capture_output=True, text=True)
 
 
 def _check_binaries() -> list[str]:
@@ -338,9 +339,9 @@ def cmd_install() -> int:
 
 def cmd_setup_local() -> int:
     """Build/repair the local-Whisper venv (uv-preferred, Python 3.11, openai-whisper)."""
-    venv = whisper_venv_dir()
+    venv = WHISPER_VENV
     py = venv_python(venv)
-    if py.exists():
+    if py.exists() and _whisper_check(py).returncode == 0:
         print(f"[setup] local Whisper venv already present: {venv}")
         return 0
 
@@ -355,7 +356,7 @@ def cmd_setup_local() -> int:
             print("[setup] `uv pip install openai-whisper` failed.", file=sys.stderr)
             return 2
     else:
-        py311 = _which(f"python{LOCAL_WHISPER_PYTHON}") or _which("python3.11")
+        py311 = _which(f"python{LOCAL_WHISPER_PYTHON}")
         if not py311:
             print(
                 f"[setup] need Python {LOCAL_WHISPER_PYTHON} or `uv`. Install uv "
@@ -366,17 +367,18 @@ def cmd_setup_local() -> int:
         print(f"[setup] creating venv with {py311}…", file=sys.stderr)
         if subprocess.run([py311, "-m", "venv", str(venv)]).returncode != 0:
             return 2
+        # Best-effort pip self-upgrade; failure here is non-fatal so we don't check it.
         subprocess.run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
         print("[setup] installing openai-whisper (this downloads ~GB)…", file=sys.stderr)
         if subprocess.run([str(py), "-m", "pip", "install", "openai-whisper"]).returncode != 0:
             return 2
 
-    check = subprocess.run([str(py), "-c", "import whisper"], capture_output=True, text=True)
+    check = _whisper_check(py)
     if check.returncode != 0:
         print(f"[setup] venv built but `import whisper` failed: {check.stderr.strip()}", file=sys.stderr)
         return 2
     print(f"[setup] local Whisper ready: {venv}")
-    print("[setup] model weights (turbo ≈ 1.5 GB) download on first transcription.")
+    print("[setup] model weights (turbo ~1.5 GB) download on first transcription.")
     return 0
 
 
