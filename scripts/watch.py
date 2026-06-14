@@ -19,6 +19,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import bundle  # noqa: E402
 import cache  # noqa: E402
 import local_whisper  # noqa: E402
+import pdf as pdf_mod  # noqa: E402
 import report as report_mod  # noqa: E402
 import scenes  # noqa: E402
 from download import download, is_url  # noqa: E402
@@ -219,6 +220,7 @@ def main() -> int:
     ap.add_argument("--end", type=str, default=None, help="Range end — uniform mode")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     ap.add_argument("--save", type=str, default=None, help="Write a portable bundle to this dir")
+    ap.add_argument("--pdf", action="store_true", help="Also write slides.pdf (all frames combined) for easy upload")
     ap.add_argument("--scenes", action="store_true", help="Slide mode: one frame per detected slide + grouped transcript")
     ap.add_argument("--scene-threshold", type=float, default=0.3, help="Starting scene-cut threshold (auto-lowered if too few slides)")
     ap.add_argument("--min-slides", type=int, default=0, help="Target minimum slides (0 = auto from duration); drives auto-sensitivity")
@@ -268,6 +270,15 @@ def main() -> int:
         print()
         print("---")
         print(f"_Work dir: `{work}` — delete when done._")
+
+    if args.pdf:
+        frame_imgs = sorted((work / "frames").glob("*.jpg"))
+        if frame_imgs:
+            pages = pdf_mod.images_to_pdf(frame_imgs, work / "slides.pdf")
+            print()
+            print(f"_Combined {pages} frames into `{work / 'slides.pdf'}` — upload this one file to Claude.ai._")
+        else:
+            print("[watch] --pdf: no frames to combine", file=sys.stderr)
 
     return 0
 

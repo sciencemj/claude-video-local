@@ -180,6 +180,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--scenes` — lecture/slide mode: one frame per detected slide + transcript grouped per slide. For 1–2 hour talks over slides.
 - `--whisper local` — local Whisper (no API key, no length cap); one-time setup via `scripts/setup.py --setup-local`. Precedence: captions → local → API.
 - `--save DIR` — write a portable bundle to convey a run to Claude.ai or another session (`/watch-load DIR` to re-ingest).
+- `--pdf` — combine all slide frames into one `slides.pdf` in the bundle, so you upload a single file to Claude.ai instead of many images (or run `scripts/make_pdf.py <bundle-dir>` on an existing bundle).
 
 ## Limits
 

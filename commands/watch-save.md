@@ -17,6 +17,7 @@ Steps:
    - **To another Claude Code session:** `/watch-load <bundle-dir>`.
    - **To Claude.ai:** upload `<bundle-dir>/report.md` and the images in `<bundle-dir>/frames/`.
      For a lighter transfer, upload `report.md` / `transcript.txt` alone (transcript-only).
+   - **Easiest for Claude.ai:** pass `--pdf` (or run `scripts/make_pdf.py <bundle-dir>`) to get a single `slides.pdf`, and upload that one file instead of every image in `frames/`.
 
 Pass `--save` from the start when sharing is the goal — re-running later re-decodes
 the video (the transcript itself is cached).

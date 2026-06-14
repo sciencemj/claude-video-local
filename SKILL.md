@@ -113,6 +113,7 @@ Optional flags:
 - `--whisper local` — transcribe locally (no API key, no 25 MB / 50 min cap). Requires a one-time `setup.py --setup-local`. Default precedence is captions → local → API.
 - `--whisper-model` / `--whisper-device` / `--whisper-language` — local Whisper knobs (default model `turbo`, auto device, auto language).
 - `--save DIR` — write a portable bundle (report.md + frames/ + transcript.json/.txt + meta.json) to convey to another session.
+- `--pdf` — also combine all slide frames into a single `slides.pdf` in the bundle, so you can upload one file to Claude.ai instead of many images. Build one from an existing bundle later with `python3 "${CLAUDE_SKILL_DIR}/scripts/make_pdf.py" <bundle-dir>`.
 
 ### Focusing on a section (higher frame rate)
 
