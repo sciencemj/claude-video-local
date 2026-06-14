@@ -127,6 +127,32 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
+## Local Whisper & long lectures
+
+For long videos (lectures, talks) and offline/no-key transcription, run Whisper
+locally:
+
+```bash
+python3 scripts/setup.py --setup-local      # one-time: Python-3.11 venv + openai-whisper (~GB)
+/watch lecture.mp4 --scenes                  # slide detection + local transcript, grouped per slide
+```
+
+`--scenes` extracts one frame per slide (not a sparse uniform scan) and aligns
+each slide with what was said while it was on screen. Local Whisper has no 25 MB /
+50 min API cap, so full 2-hour videos transcribe end to end. The transcript is
+cached for cheap re-runs.
+
+## Convey a watched video to another session
+
+Local Whisper is Claude-Code-only. Save a portable bundle and hand it off:
+
+```bash
+/watch-save lecture.mp4 ./lecture-bundle --scenes   # writes report.md + frames/ + transcript
+/watch-load ./lecture-bundle                        # re-ingest in another Claude Code session
+```
+
+For Claude.ai, upload `report.md` and the frame images from the bundle.
+
 ## Usage
 
 ```
@@ -151,6 +177,9 @@ Other knobs (passed to `scripts/watch.py`):
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
+- `--scenes` — lecture/slide mode: one frame per detected slide + transcript grouped per slide. For 1–2 hour talks over slides.
+- `--whisper local` — local Whisper (no API key, no length cap); one-time setup via `scripts/setup.py --setup-local`. Precedence: captions → local → API.
+- `--save DIR` — write a portable bundle to convey a run to Claude.ai or another session (`/watch-load DIR` to re-ingest).
 
 ## Limits
 

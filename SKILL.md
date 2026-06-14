@@ -31,7 +31,7 @@ On non-zero exit, follow the table:
 | Exit | Meaning | Action |
 |------|---------|--------|
 | `2` | Missing binaries (`ffmpeg` / `ffprobe` / `yt-dlp`) | Run installer |
-| `3` | No Whisper API key | Run installer to scaffold `.env`, then ask user for a key |
+| `3` | No transcription configured | Offer: API key, OR `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --setup-local` (local Whisper, no key, no length limit) |
 | `4` | Both missing | Run installer, then ask for a key |
 
 The installer is idempotent — safe to re-run:
@@ -65,6 +65,32 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
   - \>10min → 100 frames, sparsely spaced (warning printed)
 - If the user hands you a long video, consider asking whether they want a specific section before burning tokens on a sparse scan.
 
+## Long lectures (1–2 hours of slides)
+
+For recorded talks over slide decks, use `--scenes` with local Whisper:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" lecture.mp4 --scenes
+```
+
+This detects each slide (one frame per slide instead of a sparse uniform scan),
+transcribes the whole video locally (no length cap), and groups the transcript
+under each slide. First run needs `setup.py --setup-local` (builds a Python-3.11
+venv with openai-whisper; ~GB). The transcript is cached, so re-running with a
+different `--scene-threshold` does not re-transcribe.
+
+## Conveying a result to another session
+
+Local Whisper only runs in Claude Code. To use a result in Claude.ai or a fresh
+session, save a bundle and convey it:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" lecture.mp4 --scenes --save ./lecture-bundle
+```
+
+- Another Claude Code session: `python3 "${CLAUDE_SKILL_DIR}/scripts/load_bundle.py" ./lecture-bundle`.
+- Claude.ai: upload `report.md` and the images in `frames/` (or `report.md`/`transcript.txt` alone for transcript-only).
+
 ## How to invoke
 
 **Step 1 — parse the user input.** Separate the video source (URL or path) from any question the user asked. Example: `/watch https://youtu.be/abc what language is this in?` → source = `https://youtu.be/abc`, question = `what language is this in?`.
@@ -83,6 +109,10 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--scenes` — lecture/slide mode: detect slides and emit one frame per slide with the transcript grouped per slide. Best for 1–2 hour talks over slide decks. Defaults to 768px frames; tune with `--scene-threshold` (default 0.3) and `--min-slide-seconds` (default 3).
+- `--whisper local` — transcribe locally (no API key, no 25 MB / 50 min cap). Requires a one-time `setup.py --setup-local`. Default precedence is captions → local → API.
+- `--whisper-model` / `--whisper-device` / `--whisper-language` — local Whisper knobs (default model `turbo`, auto device, auto language).
+- `--save DIR` — write a portable bundle (report.md + frames/ + transcript.json/.txt + meta.json) to convey to another session.
 
 ### Focusing on a section (higher frame rate)
 
