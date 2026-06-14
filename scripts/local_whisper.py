@@ -14,6 +14,7 @@ torch installed. Heavy imports live inside the venv-side functions.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import sys
@@ -33,10 +34,14 @@ def launch_local(audio_path, model: str, device: str | None, language: str | Non
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
     if proc.returncode != 0:
         raise SystemExit(f"local Whisper failed (exit {proc.returncode}) — see log above")
+    # Whisper may print a "Detected language: …" line to stdout before our JSON;
+    # take the payload from the first '{' so leading chatter doesn't break parsing.
+    out = proc.stdout or ""
+    brace = out.find("{")
     try:
-        data = json.loads(proc.stdout)
+        data = json.loads(out[brace:]) if brace != -1 else json.loads(out)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"local Whisper returned non-JSON: {exc}: {proc.stdout[:200]}")
+        raise SystemExit(f"local Whisper returned non-JSON: {exc}: {out[:200]}")
     return data.get("segments") or []
 
 
@@ -96,7 +101,10 @@ def main() -> int:
     args = ap.parse_args()
 
     device = _pick_device(args.device)
-    segments = _transcribe(args.audio, args.model, device, args.language)
+    # Whisper prints "Detected language: …" to stdout; route all transcription
+    # chatter to stderr so our stdout stays a clean JSON payload.
+    with contextlib.redirect_stdout(sys.stderr):
+        segments = _transcribe(args.audio, args.model, device, args.language)
     json.dump({"segments": segments, "device": device}, sys.stdout)
     sys.stdout.write("\n")
     return 0

@@ -29,6 +29,14 @@ class LaunchLocalTests(unittest.TestCase):
         self.assertEqual(segs, [{"start": 0.0, "end": 1.0, "text": "hi"}])
 
     @unittest.skipIf(os.name == "nt", "shell-script fake interpreter is POSIX-only")
+    def test_launch_local_tolerates_leading_stdout_noise(self):
+        # Whisper prints "Detected language: English" to stdout before our JSON.
+        payload = json.dumps({"segments": [{"start": 0.0, "end": 1.0, "text": "hi"}]})
+        fake = self._fake_python(f"echo 'Detected language: English'\ncat <<'EOF'\n{payload}\nEOF")
+        segs = local_whisper.launch_local(Path("/tmp/a.mp3"), "turbo", None, None, fake)
+        self.assertEqual(segs, [{"start": 0.0, "end": 1.0, "text": "hi"}])
+
+    @unittest.skipIf(os.name == "nt", "shell-script fake interpreter is POSIX-only")
     def test_launch_local_raises_on_nonzero_exit(self):
         fake = self._fake_python("echo boom 1>&2\nexit 3")
         with self.assertRaises(SystemExit):
