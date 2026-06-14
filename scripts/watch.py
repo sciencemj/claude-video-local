@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""/watch entry point: download video, extract frames, parse transcript.
+"""/watch entry point: download video, extract frames (or slides), surface transcript.
 
-Prints a markdown report to stdout listing frame paths + transcript. Claude
-then Reads each frame path to see the video.
+Prints a markdown report to stdout listing frame paths + transcript. With
+--scenes it detects slides and groups the transcript per slide. With --save it
+writes a portable bundle. Claude then Reads each frame path to see the video.
 """
 from __future__ import annotations
 
@@ -15,59 +16,121 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import bundle  # noqa: E402
+import cache  # noqa: E402
+import local_whisper  # noqa: E402
+import report as report_mod  # noqa: E402
+import scenes  # noqa: E402
 from download import download, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
+from setup import local_available, venv_python  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import extract_audio, load_api_key, transcribe_video  # noqa: E402
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        prog="watch",
-        description="Download a video, extract auto-scaled frames, and surface the transcript.",
-    )
-    ap.add_argument("source", help="Video URL or local file path")
-    ap.add_argument("--max-frames", type=int, default=80, help="Cap on frame count (default 80, hard max 100)")
-    ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
-    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
-    ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
-    ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
-    ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
-    ap.add_argument(
-        "--no-whisper",
-        action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
-    )
-    ap.add_argument(
-        "--whisper",
-        choices=["groq", "openai"],
-        default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
-    )
-    args = ap.parse_args()
+def choose_backend(requested: str | None) -> str | None:
+    """Pick a Whisper backend: explicit choice, else auto (local → API)."""
+    if requested in ("local", "groq", "openai"):
+        return requested
+    if local_available():
+        return "local"
+    backend, _ = load_api_key(None)
+    return backend
 
-    max_frames = min(args.max_frames, 100)
 
-    if args.out_dir:
-        work = Path(args.out_dir).expanduser().resolve()
-    else:
-        work = Path(tempfile.mkdtemp(prefix="watch-"))
-    work.mkdir(parents=True, exist_ok=True)
-    print(f"[watch] working dir: {work}", file=sys.stderr)
+def transcribe_local_cached(video_path: str, work: Path, model: str,
+                            device: str | None, language: str | None) -> list[dict]:
+    audio = extract_audio(video_path, work / "audio.mp3")
+    key = cache.cache_key(audio, model, language)
+    cached = cache.load(key)
+    if cached is not None:
+        print(f"[watch] using cached local transcript ({len(cached)} segments)", file=sys.stderr)
+        return cached
+    segs = local_whisper.launch_local(audio, model, device, language, venv_python())
+    if not segs:
+        raise SystemExit("local Whisper returned no segments")
+    cache.save(key, segs, source=f"whisper (local: {model})")
+    return segs
 
-    print(
-        "[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…",
-        file=sys.stderr,
-    )
-    dl = download(args.source, work / "download")
-    video_path = dl["video_path"]
 
-    meta = get_metadata(video_path)
-    full_duration = meta["duration_seconds"]
+def run_whisper(video_path: str, work: Path, args) -> tuple[list[dict], str | None]:
+    """Resolve precedence captions(→handled by caller) → local → API. Returns full segments."""
+    model = args.whisper_model
+    requested = args.whisper
 
+    def _api(pref):
+        backend, api_key = load_api_key(pref)
+        if not (backend and api_key):
+            return [], None
+        try:
+            segs, used = transcribe_video(video_path, work / "audio.mp3", backend=backend, api_key=api_key)
+            return segs, f"whisper ({used})"
+        except SystemExit as exc:
+            print(f"[watch] whisper API failed: {exc}", file=sys.stderr)
+            return [], None
+
+    backend = choose_backend(requested)
+    if backend == "local" and not local_available():
+        print(f"[watch] --whisper local requested but the local venv is missing — run "
+              f"`python3 {SCRIPT_DIR / 'setup.py'} --setup-local`", file=sys.stderr)
+        backend = None  # fall through to API auto below
+
+    if backend == "local":
+        try:
+            return transcribe_local_cached(video_path, work, model, args.whisper_device, args.whisper_language), \
+                f"whisper (local: {model})"
+        except SystemExit as exc:
+            print(f"[watch] local whisper failed: {exc}", file=sys.stderr)
+            return _api(None)
+    if backend in ("groq", "openai"):
+        return _api(requested if requested in ("groq", "openai") else None)
+
+    print(f"[watch] no transcription configured — add an API key or run "
+          f"`python3 {SCRIPT_DIR / 'setup.py'} --setup-local`", file=sys.stderr)
+    return [], None
+
+
+def _base_ctx(args, info, meta, full_duration, resolution) -> dict:
+    return {
+        "source": args.source,
+        "title": info.get("title"),
+        "uploader": info.get("uploader"),
+        "full_duration": full_duration,
+        "width": meta.get("width"),
+        "height": meta.get("height"),
+        "codec": meta.get("codec"),
+        "resolution": resolution,
+    }
+
+
+def run_scenes(video_path, work, args, info, meta, full_duration, resolution, max_frames) -> tuple[dict, list[dict]]:
+    cuts = scenes.detect_cuts(video_path, threshold=args.scene_threshold)
+    slides = scenes.cuts_to_slides(cuts, full_duration, min_slide_seconds=args.min_slide_seconds)
+    slides, merged = scenes.merge_to_cap(slides, max_slides=max_frames)
+    if merged:
+        print(f"[watch] merged {merged} short slide(s) to stay within {max_frames}-frame cap", file=sys.stderr)
+    slides = scenes.extract_slide_frames(video_path, slides, work / "frames", resolution=resolution)
+
+    segments, source = ([], None)
+    if not args.no_whisper:
+        segments, source = run_whisper(video_path, work, args)
+    slides = scenes.group_transcript(slides, segments)
+
+    ctx = _base_ctx(args, info, meta, full_duration, resolution)
+    ctx.update({
+        "mode": "scenes",
+        "slides": slides,
+        "scene_threshold": args.scene_threshold,
+        "merged_count": merged,
+        "max_frames": max_frames,
+        "transcript_source": source,
+    })
+    return ctx, segments
+
+
+def run_uniform(video_path, work, args, dl, info, meta, full_duration, resolution, max_frames) -> tuple[dict, list[dict]]:
     start_sec = parse_time(args.start)
     end_sec = parse_time(args.end)
-
     if start_sec is not None and start_sec < 0:
         raise SystemExit("--start must be non-negative")
     if end_sec is not None and start_sec is not None and end_sec <= start_sec:
@@ -88,140 +151,102 @@ def main() -> int:
         fps = min(args.fps, MAX_FPS)
         target = max(1, int(round(fps * effective_duration)))
 
-    scope = (
-        f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
-        if focused else f"full {effective_duration:.1f}s"
-    )
+    scope = (f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
+             if focused else f"full {effective_duration:.1f}s")
     print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
+    frames = extract(video_path, work / "frames", fps=fps, resolution=resolution,
+                     max_frames=max_frames, start_seconds=start_sec, end_seconds=end_sec)
 
-    frames = extract(
-        video_path,
-        work / "frames",
-        fps=fps,
-        resolution=args.resolution,
-        max_frames=max_frames,
-        start_seconds=start_sec,
-        end_seconds=end_sec,
-    )
-
-    transcript_segments: list[dict] = []
-    transcript_text: str | None = None
-    transcript_source: str | None = None
+    segments: list[dict] = []
+    source: str | None = None
     if dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
-            transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-            transcript_text = format_transcript(transcript_segments)
-            transcript_source = "captions"
+            segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+            source = "captions"
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
+    if not segments and not args.no_whisper:
+        all_segments, source = run_whisper(video_path, work, args)
+        segments = filter_range(all_segments, start_sec, end_sec) if (focused and all_segments) else all_segments
 
-    if not transcript_segments and not args.no_whisper:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
-            try:
-                all_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
-                transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-                transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
-            except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
-        else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+    ctx = _base_ctx(args, info, meta, full_duration, resolution)
+    ctx.update({
+        "mode": "uniform",
+        "focused": focused,
+        "effective_start": effective_start,
+        "effective_end": effective_end,
+        "effective_duration": effective_duration,
+        "fps": fps,
+        "target": target,
+        "max_frames": max_frames,
+        "frames_dir": str(work / "frames"),
+        "frames": frames,
+        "transcript_segments": segments,
+        "transcript_text": format_transcript(segments) if segments else None,
+        "transcript_source": source,
+    })
+    return ctx, segments
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="watch", description="Watch a video: frames/slides + transcript.")
+    ap.add_argument("source", help="Video URL or local file path")
+    ap.add_argument("--max-frames", type=int, default=100, help="Cap on frames/slides (hard max 100 in uniform)")
+    ap.add_argument("--resolution", type=int, default=None, help="Frame width px (default 512; 768 with --scenes)")
+    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps (uniform mode)")
+    ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, HH:MM:SS) — uniform mode")
+    ap.add_argument("--end", type=str, default=None, help="Range end — uniform mode")
+    ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
+    ap.add_argument("--save", type=str, default=None, help="Write a portable bundle to this dir")
+    ap.add_argument("--scenes", action="store_true", help="Slide mode: one frame per detected slide + grouped transcript")
+    ap.add_argument("--scene-threshold", type=float, default=0.3, help="Scene-cut sensitivity (default 0.3)")
+    ap.add_argument("--min-slide-seconds", type=float, default=3.0, help="Merge slides shorter than this")
+    ap.add_argument("--no-whisper", action="store_true", help="Disable Whisper fallback")
+    ap.add_argument("--whisper", choices=["local", "groq", "openai"], default=None,
+                    help="Force a backend. Default: captions → local → API.")
+    ap.add_argument("--whisper-model", default="turbo", help="Local Whisper model (default turbo)")
+    ap.add_argument("--whisper-device", choices=["cuda", "mps", "cpu"], default=None, help="Local Whisper device")
+    ap.add_argument("--whisper-language", default=None, help="Local Whisper language code (e.g. en, ko)")
+    args = ap.parse_args()
+
+    max_frames = min(args.max_frames, 100)
+    resolution = args.resolution if args.resolution is not None else (768 if args.scenes else 512)
+
+    if args.save:
+        work = Path(args.save).expanduser().resolve()
+    elif args.out_dir:
+        work = Path(args.out_dir).expanduser().resolve()
+    else:
+        work = Path(tempfile.mkdtemp(prefix="watch-"))
+    work.mkdir(parents=True, exist_ok=True)
+    print(f"[watch] working dir: {work}", file=sys.stderr)
+
+    print("[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…", file=sys.stderr)
+    dl = download(args.source, work / "download")
+    video_path = dl["video_path"]
+    meta = get_metadata(video_path)
+    full_duration = meta["duration_seconds"]
     info = dl.get("info") or {}
 
-    print()
-    print("# watch: video report")
-    print()
-    print(f"- **Source:** {args.source}")
-    if info.get("title"):
-        print(f"- **Title:** {info['title']}")
-    if info.get("uploader"):
-        print(f"- **Uploader:** {info['uploader']}")
-    print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
-    if focused:
-        print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
-            f"({effective_duration:.1f}s)"
-        )
-    if meta.get("width") and meta.get("height"):
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
-    mode = "focused" if focused else "full"
-    print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
-    print(f"- **Frame size:** {args.resolution}px wide")
-    if transcript_segments:
-        in_range = " in range" if focused else ""
-        print(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
-        )
+    if args.scenes:
+        if args.start or args.end:
+            print("[watch] note: --start/--end are ignored in --scenes mode (full video)", file=sys.stderr)
+        ctx, segments = run_scenes(video_path, work, args, info, meta, full_duration, resolution, max_frames)
     else:
-        print("- **Transcript:** none available")
+        ctx, segments = run_uniform(video_path, work, args, dl, info, meta, full_duration, resolution, max_frames)
 
-    if not focused and full_duration > 600:
-        mins = int(full_duration // 60)
+    print(report_mod.render(ctx, relative=False))
+
+    if args.save:
+        bundle.write_bundle(work, ctx, segments)
         print()
-        print(
-            f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length — "
-            "accuracy degrades noticeably on anything over 10 minutes. For better results, "
-            "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a specific section."
-        )
-
-    print()
-    print("## Frames")
-    print()
-    print(f"Frames live at: `{work / 'frames'}`")
-    print()
-    print(
-        "**Read each frame path below with the Read tool to view the image.** "
-        "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-    )
-    print()
-    for frame in frames:
-        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
-
-    print()
-    print("## Transcript")
-    print()
-    if transcript_text:
-        label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
-    elif focused and dl.get("subtitle_path"):
-        print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
+        print(f"_Bundle saved to `{work}` — convey it with `/watch-load {work}` (Claude Code) "
+              f"or upload `report.md` + `frames/` to Claude.ai._")
     else:
-        setup_py = SCRIPT_DIR / "setup.py"
-        print(
-            "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
-            "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
-        )
-
-    print()
-    print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+        print()
+        print("---")
+        print(f"_Work dir: `{work}` — delete when done._")
 
     return 0
 
